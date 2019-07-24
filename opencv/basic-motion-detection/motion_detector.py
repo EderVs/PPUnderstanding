@@ -3,6 +3,7 @@
 # python motion_detector.py --video videos/example_01.mp4
 
 # import the necessary packages
+from collections import deque
 import imutils
 from imutils.video import VideoStream
 from imutils.video import FPS
@@ -10,18 +11,29 @@ import argparse
 import datetime
 import time
 import cv2
+import numpy as np
 
 # construct the argument parser and parse the arguments
 ap = argparse.ArgumentParser()
 ap.add_argument("-v", "--video", help="path to the video file")
-ap.add_argument("-a", "--min-area", type=int, default=500, help="minimum area size")
+ap.add_argument("-a", "--min-area", type=int, default=10, help="minimum area size")
 args = vars(ap.parse_args())
+center = None
+buffer_s = 32
+pts = deque(maxlen=buffer_s)
+
+# Colors
+orangeLower = (0, 35, 105)
+orangeUpper = (20, 200, 200)
+#orangeLower = (0, 150, 210)
+#orangeUpper = (210, 255, 250)
+
+fps = FPS().start()
 
 # if the video argument is None, then we are reading from webcam
 if args.get("video", None) is None:
     vs = VideoStream(src=0).start()
     time.sleep(2.0)
-    fps = FPS().start()
 
 # otherwise, we are reading from a video file
 else:
@@ -36,7 +48,7 @@ while True:
     # text
     frame = vs.read()
     frame = frame if args.get("video", None) is None else frame[1]
-    text = "Unoccupied"
+    text = "Ping Pong Score Tracker"
 
     # if the frame could not be grabbed, then we have reached the end
     # of the video
@@ -45,17 +57,27 @@ while True:
 
     # resize the frame, convert it to grayscale, and blur it
     frame = imutils.resize(frame, width=500)
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (21, 21), 0)
+    blurred = cv2.GaussianBlur(frame, (11, 11), 0)
+    hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
+
+    # construct a mask for the color "orange", then perform
+    # a series of dilations and erosions to remove any small
+    # blobs left in the mask
+    mask = cv2.inRange(hsv, orangeLower, orangeUpper)
+    mask = cv2.erode(mask, None, iterations=2)
+    mask = cv2.dilate(mask, None, iterations=2)
+
+    #gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    #gray = cv2.GaussianBlur(gray, (21, 21), 0)
 
     # if the first frame is None, initialize it
     if firstFrame is None:
-        firstFrame = gray
+        firstFrame = mask
         continue
 
     # compute the absolute difference between the current frame and
     # first frame
-    frameDelta = cv2.absdiff(firstFrame, gray)
+    frameDelta = cv2.absdiff(firstFrame, mask)
     thresh = cv2.threshold(frameDelta, 25, 255, cv2.THRESH_BINARY)[1]
 
     # dilate the thresholded image to fill in holes, then find contours
@@ -66,16 +88,36 @@ while True:
     cnts = imutils.grab_contours(cnts)
 
     # loop over the contours
-    for c in cnts:
+    if len(cnts) > 0:
         # if the contour is too small, ignore it
-        if cv2.contourArea(c) < args["min_area"]:
-                continue
+        #if cv2.contourArea(c) < args["min_area"]:
+        #        continue
 
         # compute the bounding box for the contour, draw it on the frame,
         # and update the text
-        (x, y, w, h) = cv2.boundingRect(c)
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-        text = "Occupied"
+        c = max(cnts, key=cv2.contourArea)
+        ((x, y), radius) = cv2.minEnclosingCircle(c)
+        #(x, y, w, h) = cv2.boundingRect(c)
+        #cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        #text = "Ping Pong ball captured"
+        M = cv2.moments(c)
+        center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
+
+    pts.appendleft(center)
+
+
+
+		# loop over the set of tracked points
+    for i in range(1, len(pts)):
+        # if either of the tracked points are None, ignore
+        # them
+        if pts[i - 1] is None or pts[i] is None:
+            continue
+
+        # otherwise, compute the thickness of the line and
+        # draw the connecting lines
+        thickness = int(np.sqrt(buffer_s / float(i + 1)) * 2.5)
+        cv2.line(frame, pts[i - 1], pts[i], (0, 0, 255), thickness)
 
     # draw the text and timestamp on the frame
     cv2.putText(frame, "Room Status: {}".format(text), (10, 20),
@@ -94,6 +136,9 @@ while True:
     # if the `q` key is pressed, break from the lop
     if key == ord("q"):
         break
+
+
+    #firstFrame = mask
 
 # stop the timer and display FPS information
 fps.stop()
